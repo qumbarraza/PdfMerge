@@ -1,0 +1,10 @@
+bin/
+obj/
+*.user
+.vs/
+.vscode/
+sample/
+nupkg/
+out/
+*.nupkg
+*.snupkg

@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/PdfMerge.Cli/PdfMerge.Cli.csproj" />
+    <Project Path="src/PdfMerge.Core/PdfMerge.Core.csproj" />
+  </Folder>
+</Solution>

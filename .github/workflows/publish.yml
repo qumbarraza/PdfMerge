@@ -1,0 +1,41 @@
+name: Publish NuGet Package
+
+# Triggers on a version tag, e.g. `git tag v0.1.0 && git push origin v0.1.0`.
+# Requires a NUGET_API_KEY secret (Settings -> Secrets and variables -> Actions)
+# with an API key generated at https://www.nuget.org/account/apikeys.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Derive version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore
+        run: dotnet restore PdfMerge.slnx
+
+      - name: Build
+        run: dotnet build PdfMerge.slnx --no-restore -c Release
+
+      - name: Pack
+        run: >
+          dotnet pack src/PdfMerge.Core/PdfMerge.Core.csproj
+          --no-build -c Release -o out
+          -p:Version=${{ steps.version.outputs.version }}
+
+      - name: Push to NuGet.org
+        run: dotnet nuget push "out/*.nupkg" --api-key "${{ secrets.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate

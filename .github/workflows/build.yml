@@ -1,0 +1,29 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Restore
+        run: dotnet restore PdfMerge.slnx
+
+      - name: Build
+        run: dotnet build PdfMerge.slnx --no-restore -c Release
+
+      - name: Pack (sanity check)
+        run: dotnet pack src/PdfMerge.Core/PdfMerge.Core.csproj --no-build -c Release -o out
