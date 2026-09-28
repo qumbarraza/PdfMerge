@@ -25,5 +25,8 @@ jobs:
       - name: Build
         run: dotnet build PdfMerge.slnx --no-restore -c Release
 
+      - name: Test
+        run: dotnet test tests/PdfMerge.Tests/PdfMerge.Tests.csproj --no-build -c Release
+
       - name: Pack (sanity check)
         run: dotnet pack src/PdfMerge.Core/PdfMerge.Core.csproj --no-build -c Release -o out

@@ -5,16 +5,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>PdfMerge.Core</RootNamespace>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>latest</LangVersion>
   </PropertyGroup>
 
   <PropertyGroup>
     <PackageId>Shark.PDFMerge</PackageId>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Authors>Qumbar Raza</Authors>
     <Description>A dependency-free, from-scratch PDF engine for .NET: read, write, and merge PDF documents and JPEG/PNG images into a single PDF.</Description>
-    <PackageTags>pdf;merge;pdfsharp;pdf-writer;pdf-parser;jpeg;png</PackageTags>
+    <PackageTags>pdf;merge;pdf-writer;pdf-parser;jpeg;png</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/qumbarraza/PdfMerge</PackageProjectUrl>
     <RepositoryUrl>https://github.com/qumbarraza/PdfMerge</RepositoryUrl>

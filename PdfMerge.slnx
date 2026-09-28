@@ -3,4 +3,7 @@
     <Project Path="src/PdfMerge.Cli/PdfMerge.Cli.csproj" />
     <Project Path="src/PdfMerge.Core/PdfMerge.Core.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/PdfMerge.Tests/PdfMerge.Tests.csproj" />
+  </Folder>
 </Solution>

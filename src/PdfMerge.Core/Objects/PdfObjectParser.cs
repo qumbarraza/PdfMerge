@@ -26,8 +26,9 @@ public static class PdfObjectParser
         }
     }
 
-    /// <summary>Parses one value; if it turns out to be a top-level dict followed by "stream", returns a PdfStreamObj.</summary>
-    public static object? ParseTopLevelValue(byte[] buf, ref int pos)
+    /// <summary>Parses one value; if it turns out to be a top-level dict followed by "stream", returns a PdfStreamObj.
+    /// <paramref name="resolveRef"/>, when given, is used to resolve an indirect /Length (only safe once the xref table is built).</summary>
+    public static object? ParseTopLevelValue(byte[] buf, ref int pos, Func<PdfRef, object?>? resolveRef = null)
     {
         var value = ParseValue(buf, ref pos);
         if (value is PdfDict dict)
@@ -40,25 +41,48 @@ public static class PdfObjectParser
                 if (pos < buf.Length && buf[pos] == '\r') pos++;
                 if (pos < buf.Length && buf[pos] == '\n') pos++;
                 int dataStart = pos;
-                int endIdx = IndexOf(buf, "endstream", dataStart);
-                if (endIdx < 0) throw new InvalidDataException("Unterminated stream (no endstream found).");
-                int dataEnd = endIdx;
-                // Trim a single trailing EOL that precedes "endstream" (not part of the data per spec intent).
-                if (dataEnd > dataStart && buf[dataEnd - 1] == '\n')
+
+                int dataEnd = -1;
+                var lengthVal = dict["Length"];
+                if (lengthVal is PdfRef lenRef && resolveRef != null) lengthVal = resolveRef(lenRef);
+                if (lengthVal is int or double)
                 {
-                    dataEnd--;
-                    if (dataEnd > dataStart && buf[dataEnd - 1] == '\r') dataEnd--;
+                    int declaredLen = lengthVal is int li ? li : (int)(double)lengthVal;
+                    if (declaredLen >= 0 && dataStart + declaredLen <= buf.Length)
+                    {
+                        int afterData = dataStart + declaredLen;
+                        int checkPos = afterData;
+                        SkipWhitespaceAndComments(buf, ref checkPos);
+                        if (MatchKeyword(buf, ref checkPos, "endstream")) dataEnd = afterData;
+                    }
                 }
-                else if (dataEnd > dataStart && buf[dataEnd - 1] == '\r')
+
+                if (dataEnd < 0)
                 {
-                    dataEnd--;
+                    // /Length missing, indirect-and-unresolvable, or wrong: fall back to scanning for "endstream".
+                    int endIdx = IndexOf(buf, "endstream", dataStart);
+                    if (endIdx < 0) throw new InvalidDataException("Unterminated stream (no endstream found).");
+                    dataEnd = endIdx;
+                    // Trim a single trailing EOL that precedes "endstream" (not part of the data per spec intent).
+                    if (dataEnd > dataStart && buf[dataEnd - 1] == '\n')
+                    {
+                        dataEnd--;
+                        if (dataEnd > dataStart && buf[dataEnd - 1] == '\r') dataEnd--;
+                    }
+                    else if (dataEnd > dataStart && buf[dataEnd - 1] == '\r')
+                    {
+                        dataEnd--;
+                    }
                 }
 
                 var streamObj = new PdfStreamObj();
                 foreach (var kv in dict.Entries()) streamObj.Dict[kv.Key] = kv.Value;
                 streamObj.Data = new byte[dataEnd - dataStart];
                 Array.Copy(buf, dataStart, streamObj.Data, 0, dataEnd - dataStart);
-                pos = endIdx + "endstream".Length;
+
+                pos = dataEnd;
+                SkipWhitespaceAndComments(buf, ref pos);
+                MatchKeyword(buf, ref pos, "endstream");
                 return streamObj;
             }
             pos = save;
@@ -119,7 +143,7 @@ public static class PdfObjectParser
             pos = save;
         }
 
-        return isInt ? (int)first : first;
+        return isInt ? (object)(int)first : first;
     }
 
     private static bool HasDecimalPoint(byte[] buf, int start, int end)
@@ -231,35 +255,50 @@ public static class PdfObjectParser
         return sb.ToString();
     }
 
+    // Guards against a StackOverflowException (uncatchable, kills the process) on hostile/malformed
+    // input with pathologically deep array/dict nesting.
+    private const int MaxNestingDepth = 500;
+    [ThreadStatic] private static int _nestingDepth;
+
     private static List<object?> ParseArray(byte[] buf, ref int pos)
     {
-        pos++; // skip '['
-        var list = new List<object?>();
-        while (true)
+        if (++_nestingDepth > MaxNestingDepth) throw new InvalidDataException("PDF object nesting exceeds the maximum supported depth (possibly malformed or hostile).");
+        try
         {
-            SkipWhitespaceAndComments(buf, ref pos);
-            if (pos >= buf.Length) throw new InvalidDataException("Unterminated array.");
-            if (buf[pos] == ']') { pos++; break; }
-            list.Add(ParseValue(buf, ref pos));
+            pos++; // skip '['
+            var list = new List<object?>();
+            while (true)
+            {
+                SkipWhitespaceAndComments(buf, ref pos);
+                if (pos >= buf.Length) throw new InvalidDataException("Unterminated array.");
+                if (buf[pos] == ']') { pos++; break; }
+                list.Add(ParseValue(buf, ref pos));
+            }
+            return list;
         }
-        return list;
+        finally { _nestingDepth--; }
     }
 
     private static PdfDict ParseDict(byte[] buf, ref int pos)
     {
-        pos += 2; // skip '<<'
-        var dict = new PdfDict();
-        while (true)
+        if (++_nestingDepth > MaxNestingDepth) throw new InvalidDataException("PDF object nesting exceeds the maximum supported depth (possibly malformed or hostile).");
+        try
         {
-            SkipWhitespaceAndComments(buf, ref pos);
-            if (pos + 1 < buf.Length && buf[pos] == '>' && buf[pos + 1] == '>') { pos += 2; break; }
-            if (pos >= buf.Length) throw new InvalidDataException("Unterminated dictionary.");
-            if (buf[pos] != '/') throw new InvalidDataException($"Expected dictionary key at position {pos}.");
-            var key = ParseName(buf, ref pos);
-            var val = ParseValue(buf, ref pos);
-            dict[key.Value] = val;
+            pos += 2; // skip '<<'
+            var dict = new PdfDict();
+            while (true)
+            {
+                SkipWhitespaceAndComments(buf, ref pos);
+                if (pos + 1 < buf.Length && buf[pos] == '>' && buf[pos + 1] == '>') { pos += 2; break; }
+                if (pos >= buf.Length) throw new InvalidDataException("Unterminated dictionary.");
+                if (buf[pos] != '/') throw new InvalidDataException($"Expected dictionary key at position {pos}.");
+                var key = ParseName(buf, ref pos);
+                var val = ParseValue(buf, ref pos);
+                dict[key.Value] = val;
+            }
+            return dict;
         }
-        return dict;
+        finally { _nestingDepth--; }
     }
 
     public static bool MatchKeyword(byte[] buf, ref int pos, string keyword)

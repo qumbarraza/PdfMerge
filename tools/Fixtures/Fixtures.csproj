@@ -1,8 +1,13 @@
+<!--
+  Dev-only fixture generator. Uses System.Drawing.Common, which only runs on Windows, so this
+  project is deliberately NOT added to PdfMerge.slnx / built in CI (the Core library and CLI
+  have no such restriction and build/run cross-platform).
+-->
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <UseWindowsForms>false</UseWindowsForms>

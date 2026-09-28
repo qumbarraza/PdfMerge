@@ -12,20 +12,25 @@ public enum PngColorType
 }
 
 /// <summary>
-/// Minimal PNG decoder: supports 8-bit depth, non-interlaced images (color types
-/// Gray/RGB/Indexed/GrayAlpha/RGBA). Enough for typical exported screenshots/photos.
+/// Minimal PNG decoder: supports bit depths 1/2/4/8/16 (per the type's allowed set),
+/// non-interlaced images, all five color types, and tRNS transparency. Adam7-interlaced
+/// PNGs are not supported.
 /// </summary>
 public sealed class DecodedPng
 {
     public int Width { get; init; }
     public int Height { get; init; }
     public PngColorType ColorType { get; init; }
+    public int BitDepth { get; init; }
 
-    /// <summary>Raw, de-filtered pixel bytes (channels interleaved, no PNG filter bytes).</summary>
+    /// <summary>Raw, de-filtered pixel bytes: packed per PNG's own bit-packing rules (which match PDF's), no filter bytes.</summary>
     public byte[] Pixels { get; init; } = Array.Empty<byte>();
 
     /// <summary>Palette entries (R,G,B) for indexed images, else empty.</summary>
     public byte[] Palette { get; init; } = Array.Empty<byte>();
+
+    /// <summary>Raw tRNS chunk bytes, if present, else empty. Meaning depends on ColorType (see PNG spec).</summary>
+    public byte[] Transparency { get; init; } = Array.Empty<byte>();
 
     public int Channels => ColorType switch
     {
@@ -46,6 +51,7 @@ public sealed class DecodedPng
         int width = 0, height = 0, bitDepth = 0, interlace = 0;
         PngColorType colorType = PngColorType.Rgb;
         byte[] palette = Array.Empty<byte>();
+        byte[] trns = Array.Empty<byte>();
         using var idat = new MemoryStream();
 
         while (pos + 8 <= data.Length)
@@ -67,6 +73,11 @@ public sealed class DecodedPng
                 palette = new byte[len];
                 Array.Copy(data, bodyStart, palette, 0, len);
             }
+            else if (type == "tRNS")
+            {
+                trns = new byte[len];
+                Array.Copy(data, bodyStart, trns, 0, len);
+            }
             else if (type == "IDAT")
             {
                 idat.Write(data, bodyStart, len);
@@ -81,18 +92,8 @@ public sealed class DecodedPng
 
         if (width == 0 || height == 0)
             throw new InvalidDataException("PNG missing IHDR.");
-        if (bitDepth != 8)
-            throw new NotSupportedException($"PNG bit depth {bitDepth} is not supported (only 8-bit PNGs); re-save the image as 8-bit.");
         if (interlace != 0)
             throw new NotSupportedException("Interlaced (Adam7) PNGs are not supported; re-save the image without interlacing.");
-
-        idat.Position = 0;
-        using var inflated = new MemoryStream();
-        using (var zlib = new ZLibStream(idat, CompressionMode.Decompress))
-        {
-            zlib.CopyTo(inflated);
-        }
-        byte[] raw = inflated.ToArray();
 
         int channels = colorType switch
         {
@@ -103,9 +104,20 @@ public sealed class DecodedPng
             PngColorType.Rgba => 4,
             _ => throw new NotSupportedException($"Unsupported PNG color type {colorType}."),
         };
+        bool reducedDepthAllowed = colorType is PngColorType.Gray or PngColorType.Indexed;
+        if (bitDepth is not (1 or 2 or 4 or 8 or 16) || (!reducedDepthAllowed && bitDepth < 8))
+            throw new NotSupportedException($"Unsupported PNG bit depth {bitDepth} for color type {colorType}.");
 
-        int bpp = channels; // bit depth is always 8 here
-        int stride = width * channels;
+        idat.Position = 0;
+        using var inflated = new MemoryStream();
+        using (var zlib = new ZLibStream(idat, CompressionMode.Decompress))
+        {
+            zlib.CopyTo(inflated);
+        }
+        byte[] raw = inflated.ToArray();
+
+        int bpp = Math.Max(1, (channels * bitDepth + 7) / 8);
+        int stride = (width * channels * bitDepth + 7) / 8;
         var pixels = new byte[stride * height];
         int rawPos = 0;
         byte[] prev = new byte[stride];
@@ -126,8 +138,10 @@ public sealed class DecodedPng
             Width = width,
             Height = height,
             ColorType = colorType,
+            BitDepth = bitDepth,
             Pixels = pixels,
             Palette = palette,
+            Transparency = trns,
         };
     }
 

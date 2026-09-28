@@ -8,7 +8,13 @@ public sealed class PageInfo
     public object? Contents { get; init; }
     public PdfDict Resources { get; init; } = new();
     public List<object?> MediaBox { get; init; } = new() { 0, 0, 612, 792 };
+    public List<object?>? CropBox { get; init; }
     public int Rotate { get; init; }
+    public object? UserUnit { get; init; }
+    public object? Group { get; init; }
+
+    /// <summary>The page's /Annots array, if any — refs are relative to the source document.</summary>
+    public object? Annots { get; init; }
 }
 
 /// <summary>
@@ -28,6 +34,76 @@ public sealed class PdfDocumentReader
     {
         _buf = bytes;
         BuildXRef();
+
+        // Damaged/non-conforming xref (bad startxref offset, truncated file, ...): rebuild by
+        // scanning the whole file for "N G obj" headers rather than giving up.
+        if (Deref(Trailer["Root"]) is not PdfDict)
+        {
+            RebuildXRefByScanning();
+        }
+    }
+
+    private void RebuildXRefByScanning()
+    {
+        int pos = 0;
+        while (pos < _buf.Length)
+        {
+            int idx = PdfObjectParser.IndexOf(_buf, " obj", pos);
+            if (idx < 0) break;
+
+            int genEnd = idx;
+            int genStart = genEnd;
+            while (genStart > 0 && _buf[genStart - 1] is >= (byte)'0' and <= (byte)'9') genStart--;
+            if (genStart < genEnd)
+            {
+                int q = genStart;
+                while (q > 0 && PdfObjectParser.IsWhitespace(_buf[q - 1])) q--;
+                int numEnd = q;
+                int numStart = numEnd;
+                while (numStart > 0 && _buf[numStart - 1] is >= (byte)'0' and <= (byte)'9') numStart--;
+                if (numStart < numEnd &&
+                    int.TryParse(System.Text.Encoding.ASCII.GetString(_buf, numStart, numEnd - numStart), out int objNum))
+                {
+                    // Later occurrences win: in an incrementally-updated file, the last "N G obj" for
+                    // a given number is the current revision.
+                    _xref[objNum] = new XRefEntry { Kind = XRefEntryKind.Direct, Offset = numStart };
+                }
+            }
+            pos = idx + 4;
+        }
+        _cache.Clear();
+        _objStmCache.Clear();
+
+        // Prefer the last "trailer" dict with a /Root; otherwise fall back to any object of /Type /Catalog.
+        int trailerIdx = -1, searchFrom = 0;
+        while (true)
+        {
+            int idx = PdfObjectParser.IndexOf(_buf, "trailer", searchFrom);
+            if (idx < 0) break;
+            trailerIdx = idx;
+            searchFrom = idx + 7;
+        }
+        if (trailerIdx >= 0)
+        {
+            int p = trailerIdx + 7;
+            PdfObjectParser.SkipWhitespaceAndComments(_buf, ref p);
+            if (PdfObjectParser.ParseValue(_buf, ref p) is PdfDict td && td["Root"] != null)
+            {
+                Trailer = td;
+            }
+        }
+
+        if (Deref(Trailer["Root"]) is not PdfDict)
+        {
+            foreach (var objNum in _xref.Keys.ToList())
+            {
+                if (Resolve(new PdfRef(objNum)) is PdfDict d && (Deref(d[PdfName.Type.Value]) as PdfName)?.Value == "Catalog")
+                {
+                    Trailer["Root"] = new PdfRef(objNum);
+                    break;
+                }
+            }
+        }
     }
 
     public object? Resolve(PdfRef r)
@@ -39,7 +115,7 @@ public sealed class PdfDocumentReader
         if (_xref.TryGetValue(r.Num, out var entry))
         {
             value = entry.Kind == XRefEntryKind.Direct
-                ? ParseIndirectObjectAt(entry.Offset)
+                ? ParseIndirectObjectAt(entry.Offset, resolveLength: true)
                 : ResolveFromObjectStream(entry.ObjStmNum, entry.IndexInObjStm);
         }
 
@@ -56,22 +132,30 @@ public sealed class PdfDocumentReader
 
     public PdfDict? Root => Deref(Trailer["Root"]) as PdfDict;
 
+    /// <summary>True when the document's trailer declares an /Encrypt dictionary (strings/streams are not decrypted by this reader).</summary>
+    public bool IsEncrypted => Trailer["Encrypt"] != null;
+
+    private const int MaxPageTreeDepth = 256;
+
     public List<PageInfo> GetPages()
     {
         var result = new List<PageInfo>();
         var root = Root;
         var pagesRoot = Deref(root?["Pages"]) as PdfDict;
-        if (pagesRoot != null) Walk(pagesRoot, new PdfDict(), new List<object?> { 0, 0, 612, 792 }, 0, result, new HashSet<PdfDict>());
+        if (pagesRoot != null)
+            Walk(pagesRoot, new PdfDict(), new List<object?> { 0, 0, 612, 792 }, null, 0, result, new HashSet<PdfDict>(), 0);
         return result;
     }
 
-    private void Walk(PdfDict node, PdfDict inheritedResources, List<object?> inheritedMediaBox, int inheritedRotate,
-        List<PageInfo> result, HashSet<PdfDict> visited)
+    private void Walk(PdfDict node, PdfDict inheritedResources, List<object?> inheritedMediaBox, List<object?>? inheritedCropBox,
+        int inheritedRotate, List<PageInfo> result, HashSet<PdfDict> visited, int depth)
     {
+        if (depth > MaxPageTreeDepth) throw new InvalidDataException("Page tree exceeds maximum supported depth (possibly malformed or hostile).");
         if (!visited.Add(node)) return; // guard against malformed cyclic trees
 
         var resources = Deref(node["Resources"]) as PdfDict ?? inheritedResources;
         var mediaBoxRaw = Deref(node["MediaBox"]) as List<object?> ?? inheritedMediaBox;
+        var cropBoxRaw = Deref(node["CropBox"]) as List<object?> ?? inheritedCropBox;
         int rotate = node["Rotate"] != null ? ToInt(Deref(node["Rotate"])) : inheritedRotate;
 
         var typeName = (Deref(node[PdfName.Type.Value]) as PdfName)?.Value;
@@ -84,7 +168,7 @@ public sealed class PdfDocumentReader
                 foreach (var kidRaw in kids)
                 {
                     if (Deref(kidRaw) is PdfDict kidDict)
-                        Walk(kidDict, resources, mediaBoxRaw, rotate, result, visited);
+                        Walk(kidDict, resources, mediaBoxRaw, cropBoxRaw, rotate, result, visited, depth + 1);
                 }
             }
             return;
@@ -96,7 +180,11 @@ public sealed class PdfDocumentReader
             Contents = node["Contents"],
             Resources = resources,
             MediaBox = mediaBoxRaw,
+            CropBox = cropBoxRaw,
             Rotate = rotate,
+            UserUnit = node["UserUnit"],
+            Group = node["Group"],
+            Annots = node["Annots"],
         });
     }
 
@@ -104,7 +192,7 @@ public sealed class PdfDocumentReader
 
     // ---- Indirect object parsing -------------------------------------------------
 
-    private object? ParseIndirectObjectAt(long offset)
+    private object? ParseIndirectObjectAt(long offset, bool resolveLength = false)
     {
         int pos = (int)offset;
         PdfObjectParser.SkipWhitespaceAndComments(_buf, ref pos);
@@ -114,7 +202,8 @@ public sealed class PdfDocumentReader
         while (pos < _buf.Length && _buf[pos] is >= (byte)'0' and <= (byte)'9') pos++;
         PdfObjectParser.SkipWhitespaceAndComments(_buf, ref pos);
         PdfObjectParser.MatchKeyword(_buf, ref pos, "obj");
-        return PdfObjectParser.ParseTopLevelValue(_buf, ref pos);
+        // Resolving /Length here is only safe once the xref table is fully built (i.e. not while bootstrapping it).
+        return PdfObjectParser.ParseTopLevelValue(_buf, ref pos, resolveLength ? r => Resolve(r) : null);
     }
 
     private object? ResolveFromObjectStream(int objStmNum, int index)
@@ -199,11 +288,17 @@ public sealed class PdfDocumentReader
 
                 for (int i = 0; i < count; i++)
                 {
+                    // Entries are conventionally 20 bytes ("nnnnnnnnnn ggggg n \r\n" or f), but some
+                    // non-conforming writers pad differently, so parse by field rather than fixed width.
                     PdfObjectParser.SkipWhitespaceAndComments(_buf, ref pos);
-                    // Each entry is exactly 20 bytes: "nnnnnnnnnn ggggg n \r\n" (or f).
-                    string entryOff = System.Text.Encoding.ASCII.GetString(_buf, pos, 10);
-                    string entryType = System.Text.Encoding.ASCII.GetString(_buf, pos + 17, 1);
-                    pos += 20;
+                    int offStart = pos;
+                    while (pos < _buf.Length && _buf[pos] is >= (byte)'0' and <= (byte)'9') pos++;
+                    string entryOff = System.Text.Encoding.ASCII.GetString(_buf, offStart, pos - offStart);
+                    PdfObjectParser.SkipWhitespaceAndComments(_buf, ref pos);
+                    while (pos < _buf.Length && _buf[pos] is >= (byte)'0' and <= (byte)'9') pos++; // generation, unused
+                    PdfObjectParser.SkipWhitespaceAndComments(_buf, ref pos);
+                    string entryType = pos < _buf.Length ? ((char)_buf[pos]).ToString() : "";
+                    pos++;
                     int objNum = start + i;
                     if (entryType == "n" && !_xref.ContainsKey(objNum))
                     {
@@ -218,13 +313,13 @@ public sealed class PdfDocumentReader
             else MergeTrailer(trailerDict);
 
             // Hybrid-reference files also carry a cross-reference stream via /XRefStm.
-            if (trailerDict["XRefStm"] is int xrefStmOff)
+            if (TryGetInt(trailerDict["XRefStm"], out int xrefStmOff))
             {
                 bool dummy = true;
                 ParseXRefSectionAt(xrefStmOff, ref dummy);
             }
 
-            return trailerDict["Prev"] is int prev ? prev : null;
+            return TryGetInt(trailerDict["Prev"], out int prev) ? prev : null;
         }
 
         // Cross-reference stream: "N G obj << ... /Type /XRef ... >> stream ... endstream".
@@ -248,7 +343,7 @@ public sealed class PdfDocumentReader
         }
         else
         {
-            int size = xrefStm.Dict["Size"] is int sz ? sz : 0;
+            int size = ToIntLiteral(xrefStm.Dict["Size"]);
             ranges.Add((0, size));
         }
 
@@ -272,7 +367,17 @@ public sealed class PdfDocumentReader
             }
         }
 
-        return xrefStm.Dict["Prev"] is int prevOff ? prevOff : null;
+        return TryGetInt(xrefStm.Dict["Prev"], out int prevOff) ? prevOff : null;
+    }
+
+    private static bool TryGetInt(object? v, out int result)
+    {
+        switch (v)
+        {
+            case int i: result = i; return true;
+            case double d: result = (int)d; return true;
+            default: result = 0; return false;
+        }
     }
 
     private void MergeTrailer(PdfDict d)

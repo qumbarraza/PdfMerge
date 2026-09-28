@@ -68,10 +68,12 @@ public sealed class PdfWriter
             }
         }
 
+        var id = new PdfHexString(Guid.NewGuid().ToByteArray());
         var trailer = new PdfDict();
         trailer["Size"] = size;
         trailer["Root"] = root;
         if (info != null) trailer["Info"] = info.Value;
+        trailer["ID"] = new List<object?> { id, id };
 
         PdfSerializer.WriteAscii(_out, "trailer\n");
         PdfSerializer.Write(trailer, _out);

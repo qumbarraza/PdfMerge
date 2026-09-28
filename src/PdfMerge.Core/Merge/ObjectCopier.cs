@@ -14,6 +14,11 @@ public sealed class ObjectCopier
     private readonly PdfWriter _writer;
     private readonly Dictionary<int, PdfRef> _memo = new();
 
+    // Guards against a StackOverflowException (uncatchable) from a pathologically deep or
+    // maliciously constructed object graph; real-world documents never come close to this.
+    private const int MaxDepth = 500;
+    private int _depth;
+
     public ObjectCopier(PdfDocumentReader source, PdfWriter writer)
     {
         _source = source;
@@ -23,6 +28,20 @@ public sealed class ObjectCopier
     /// <summary>Copies a value that may directly embed the object graph (dicts/arrays/names/etc.),
     /// rewriting any PdfRef it contains into new indirect objects in the destination document.</summary>
     public object? CopyValue(object? value)
+    {
+        if (++_depth > MaxDepth)
+        {
+            _depth--;
+            throw new InvalidDataException("PDF object graph exceeds the maximum supported nesting depth (possibly malformed or hostile).");
+        }
+        try
+        {
+            return CopyValueCore(value);
+        }
+        finally { _depth--; }
+    }
+
+    private object? CopyValueCore(object? value)
     {
         switch (value)
         {

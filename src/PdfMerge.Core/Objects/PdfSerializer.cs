@@ -28,6 +28,11 @@ public static class PdfSerializer
             case string str:
                 WriteLiteralString(s, str);
                 break;
+            case PdfHexString hex:
+                WriteAscii(s, "<");
+                foreach (var b in hex.Bytes) WriteAscii(s, b.ToString("x2"));
+                WriteAscii(s, ">");
+                break;
             case PdfName name:
                 WriteName(s, name.Value);
                 break;
@@ -87,27 +92,24 @@ public static class PdfSerializer
 
     private static void WriteLiteralString(Stream s, string str)
     {
+        // Characters outside Latin-1 can't round-trip as PDFDocEncoding; write UTF-16BE with a BOM instead
+        // (a literal string may contain raw bytes - the PDF spec explicitly allows this for Unicode text).
+        bool needsUnicode = str.Any(c => c > 255);
+        IEnumerable<byte> bytes = needsUnicode
+            ? new byte[] { 0xFE, 0xFF }.Concat(Encoding.BigEndianUnicode.GetBytes(str))
+            : str.Select(c => (byte)c);
+
         s.WriteByte((byte)'(');
-        foreach (var ch in str)
+        foreach (var b in bytes)
         {
-            switch (ch)
+            switch (b)
             {
-                case '(': WriteAscii(s, "\\("); break;
-                case ')': WriteAscii(s, "\\)"); break;
-                case '\\': WriteAscii(s, "\\\\"); break;
-                case '\r': WriteAscii(s, "\\r"); break;
-                case '\n': WriteAscii(s, "\\n"); break;
-                default:
-                    if (ch > 255)
-                    {
-                        // Fall back to '?' for characters outside Latin-1; text content isn't the focus here.
-                        s.WriteByte((byte)'?');
-                    }
-                    else
-                    {
-                        s.WriteByte((byte)ch);
-                    }
-                    break;
+                case (byte)'(': WriteAscii(s, "\\("); break;
+                case (byte)')': WriteAscii(s, "\\)"); break;
+                case (byte)'\\': WriteAscii(s, "\\\\"); break;
+                case (byte)'\r': WriteAscii(s, "\\r"); break;
+                case (byte)'\n': WriteAscii(s, "\\n"); break;
+                default: s.WriteByte(b); break;
             }
         }
         s.WriteByte((byte)')');

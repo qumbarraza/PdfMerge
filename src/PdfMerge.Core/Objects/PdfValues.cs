@@ -75,3 +75,10 @@ public sealed class PdfStreamObj
     public PdfDict Dict { get; } = new();
     public byte[] Data { get; set; } = Array.Empty<byte>();
 }
+
+/// <summary>A PDF hex string, e.g. &lt;48656C6C6F&gt; — used for binary values like the trailer's /ID.</summary>
+public sealed class PdfHexString
+{
+    public byte[] Bytes { get; }
+    public PdfHexString(byte[] bytes) => Bytes = bytes;
+}
