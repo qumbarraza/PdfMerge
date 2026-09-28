@@ -1,8 +1,9 @@
 name: Publish NuGet Package
 
 # Triggers on a version tag, e.g. `git tag v0.1.0 && git push origin v0.1.0`.
-# Requires a NUGET_API_KEY secret (Settings -> Secrets and variables -> Actions)
-# with an API key generated at https://www.nuget.org/account/apikeys.
+# Uses NuGet.org Trusted Publishing (OIDC) - no stored API key needed. This
+# must match the trusted publishing policy configured on nuget.org: repo
+# qumbarraza/PdfMerge, workflow file publish.yml, environment "production".
 on:
   push:
     tags:
@@ -11,6 +12,10 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write # required to obtain the OIDC token for Trusted Publishing
+
     steps:
       - uses: actions/checkout@v4
 
@@ -37,5 +42,11 @@ jobs:
           --no-build -c Release -o out
           -p:Version=${{ steps.version.outputs.version }}
 
+      - name: NuGet login (OIDC -> temp API key)
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: qumbar.raza
+
       - name: Push to NuGet.org
-        run: dotnet nuget push "out/*.nupkg" --api-key "${{ secrets.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
+        run: dotnet nuget push "out/*.nupkg" --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
