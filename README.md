@@ -14,7 +14,7 @@ from scratch (no PDFsharp, no iText, no native dependencies). It can:
 ## Install
 
 ```bash
-dotnet add package PdfMerge
+dotnet add package Shark.PDFMerge
 ```
 
 ## Usage

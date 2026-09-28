@@ -3,7 +3,8 @@ name: Publish NuGet Package
 # Triggers on a version tag, e.g. `git tag v0.1.0 && git push origin v0.1.0`.
 # Uses NuGet.org Trusted Publishing (OIDC) - no stored API key needed. This
 # must match the trusted publishing policy configured on nuget.org: repo
-# qumbarraza/PdfMerge, workflow file publish.yml, environment "production".
+# qumbarraza/PdfMerge, workflow file publish.yml, environment "production",
+# glob pattern "Shark.PDFMerge" (the package ID, set in PdfMerge.Core.csproj).
 on:
   push:
     tags:

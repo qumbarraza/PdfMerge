@@ -10,7 +10,7 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <PackageId>PdfMerge</PackageId>
+    <PackageId>Shark.PDFMerge</PackageId>
     <Version>0.1.0</Version>
     <Authors>Qumbar Raza</Authors>
     <Description>A dependency-free, from-scratch PDF engine for .NET: read, write, and merge PDF documents and JPEG/PNG images into a single PDF.</Description>
